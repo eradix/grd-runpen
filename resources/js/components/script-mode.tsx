@@ -9,6 +9,7 @@ interface Props {
     stdin: string;
     showStdin: boolean;
     result: RunResult | null;
+    live: { out: string; err: string } | null;
     error: string | null;
     running: boolean;
     onSourceChange: (value: string) => void;
@@ -25,6 +26,7 @@ export default function ScriptMode({
     stdin,
     showStdin,
     result,
+    live,
     error,
     running,
     onSourceChange,
@@ -71,7 +73,12 @@ export default function ScriptMode({
             </section>
 
             <section className="min-h-0 overflow-hidden border-t border-slate-800 lg:border-t-0">
-                <OutputPane result={result} error={error} running={running} />
+                <OutputPane
+                    result={result}
+                    live={live}
+                    error={error}
+                    running={running}
+                />
             </section>
         </div>
     );

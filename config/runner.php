@@ -41,6 +41,28 @@ return [
     'cpus' => env('RUNNER_CPUS', '0.5'),
     'pids' => (int) env('RUNNER_PIDS', 64),
 
+    /*
+    |----------------------------------------------------------------------
+    | Warm spares
+    |----------------------------------------------------------------------
+    |
+    | Starting a container costs ~200ms, which is most of a short snippet's
+    | round trip. The pool keeps a few already-started containers waiting so a
+    | run only pays for `podman exec` (~100ms).
+    |
+    | Each container is still used for exactly ONE run and then destroyed: the
+    | isolation story does not change, the startup just happens before the
+    | request rather than during it. `ttl` is passed as the container's own
+    | --timeout, so a spare that is never claimed (or one leaked by a PHP
+    | process that died mid-run) removes itself.
+    |
+    */
+    'pool' => [
+        'enabled' => (bool) env('RUNNER_POOL', true),
+        'size' => (int) env('RUNNER_POOL_SIZE', 2),
+        'ttl' => (int) env('RUNNER_POOL_TTL', 300),
+    ],
+
     'languages' => [
 
         'php' => [

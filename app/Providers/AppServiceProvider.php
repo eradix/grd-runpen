@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Services\Runner\CodeRunner;
+use App\Services\Runner\ContainerPool;
 use App\Services\Runner\PodmanRunner;
 use App\Services\Runner\RunSlots;
 use Carbon\CarbonImmutable;
@@ -21,6 +22,12 @@ class AppServiceProvider extends ServiceProvider
         // Swapped for a FakeRunner in HTTP tests, so the routes can be tested
         // without spawning containers.
         $this->app->bind(CodeRunner::class, PodmanRunner::class);
+
+        $this->app->singleton(ContainerPool::class, fn (): ContainerPool => new ContainerPool(
+            size: (int) config('runner.pool.size'),
+            ttl: (int) config('runner.pool.ttl'),
+            enabled: (bool) config('runner.pool.enabled'),
+        ));
 
         $this->app->singleton(RunSlots::class, fn (): RunSlots => new RunSlots(
             slots: (int) config('runner.max_concurrent'),

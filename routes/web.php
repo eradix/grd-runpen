@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/', PlaygroundController::class)->name('home');
 Route::get('/p/{snippet}', PlaygroundController::class)->name('snippet.show');
+Route::get('/recent', [SnippetController::class, 'index'])->name('snippet.index');
 
 // Throttles are per-IP and deliberately generous: they exist to stop a script
 // hammering the runner, not to ration normal use. The hard ceiling on load is

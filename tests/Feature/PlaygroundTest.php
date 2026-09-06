@@ -50,19 +50,39 @@ it('seeds the playground from a saved snippet', function (): void {
             ->where('snippet.language', 'python'));
 });
 
-it('runs a snippet', function (): void {
+it('streams a run back as server-sent events', function (): void {
     $this->app->instance(CodeRunner::class, new FakeRunner(
-        new RunResult(stdout: '4', stderr: '', exitCode: 0, durationMs: 210),
+        new RunResult(stdout: '4', stderr: '', exitCode: 0, durationMs: 210, peakMemoryBytes: 12_582_912),
     ));
 
-    $this->postJson('/run', ['language' => 'php', 'code' => '<?php echo 2+2;'])
+    $response = $this->postJson('/run', ['language' => 'php', 'code' => '<?php echo 2+2;'])
         ->assertOk()
-        ->assertJson(['stdout' => '4', 'exitCode' => 0, 'durationMs' => 210, 'timedOut' => false]);
+        ->assertHeader('content-type', 'text/event-stream; charset=utf-8');
+
+    $stream = $response->streamedContent();
+
+    // Output arrives as it is produced, then one final event carries the
+    // verdict — exit code, duration, and the flags the UI turns into badges.
+    expect($stream)->toContain('event: output')
+        ->and($stream)->toContain('"stream":"out","text":"4"')
+        ->and($stream)->toContain('event: done')
+        ->and($stream)->toContain('"exitCode":0')
+        ->and($stream)->toContain('"peakMemoryBytes":12582912');
+});
+
+it('reports stderr on its own stream', function (): void {
+    $this->app->instance(CodeRunner::class, new FakeRunner(
+        new RunResult(stdout: '', stderr: 'Fatal error', exitCode: 255, durationMs: 30),
+    ));
+
+    expect($this->postJson('/run', ['language' => 'php', 'code' => 'x'])->streamedContent())
+        ->toContain('"stream":"err","text":"Fatal error"');
 });
 
 it('passes stdin through to the runner', function (): void {
     $this->postJson('/run', ['language' => 'python', 'code' => 'x', 'stdin' => 'hello'])
-        ->assertOk();
+        ->assertOk()
+        ->streamedContent();
 
     expect($this->fake->runs[0]['stdin'])->toBe('hello');
 });
@@ -79,6 +99,18 @@ it('rejects a snippet that is too large', function (): void {
     $this->postJson('/run', ['language' => 'php', 'code' => str_repeat('a', 100_001)])
         ->assertStatus(422)
         ->assertJsonValidationErrors('code');
+});
+
+it('releases its slot when the stream finishes', function (): void {
+    // The slot is held across the whole stream rather than the controller
+    // method, so a bug here would wedge the playground after N runs.
+    foreach (range(1, config('runner.max_concurrent') + 2) as $ignored) {
+        $this->postJson('/run', ['language' => 'php', 'code' => '<?php echo 1;'])
+            ->assertOk()
+            ->streamedContent();
+    }
+
+    expect($this->fake->runs)->toHaveCount(config('runner.max_concurrent') + 2);
 });
 
 it('refuses to run when every slot is busy', function (): void {
@@ -100,6 +132,28 @@ it('runs again once a slot frees up', function (): void {
     $this->postJson('/run', ['language' => 'php', 'code' => '<?php echo 1;'])->assertOk();
 
     $lock->release();
+});
+
+it('lists recently shared snippets', function (): void {
+    Snippet::create(['mode' => 'script', 'language' => 'php', 'source' => "<?php\n\necho 'hello';"]);
+    Snippet::create(['mode' => 'frontend', 'html' => '<h1>a heading</h1>']);
+
+    $this->get('/recent')
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page) => $page
+            ->component('recent')
+            ->has('snippets', 2)
+            // Newest first, and the preview skips the opening PHP tag.
+            ->where('snippets.0.label', 'Frontend')
+            ->where('snippets.0.preview', '<h1>a heading</h1>')
+            ->where('snippets.1.label', 'PHP')
+            ->where('snippets.1.preview', "echo 'hello';"));
+});
+
+it('shows an empty recent page when nothing has been shared', function (): void {
+    $this->get('/recent')
+        ->assertOk()
+        ->assertInertia(fn (AssertableInertia $page) => $page->component('recent')->has('snippets', 0));
 });
 
 it('saves a script snippet and returns its link', function (): void {

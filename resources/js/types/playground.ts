@@ -19,6 +19,20 @@ export interface RunResult {
     timedOut: boolean;
     truncated: boolean;
     outOfMemory: boolean;
+    /** Read from the container's cgroup; null where cgroups are not readable. */
+    peakMemoryBytes: number | null;
+    /** Whether the container came from the warm pool or was started for this run. */
+    warmStart: boolean;
+}
+
+/** One row on the recent page. */
+export interface RecentSnippet {
+    slug: string;
+    mode: Mode;
+    language: string | null;
+    label: string;
+    preview: string;
+    createdAt: string;
 }
 
 export interface Snippet {

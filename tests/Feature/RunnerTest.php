@@ -18,8 +18,26 @@ use Symfony\Component\Process\Process;
 */
 
 beforeEach(function (): void {
-    $this->runner = new PodmanRunner;
+    $this->runner = app(PodmanRunner::class);
 });
+
+/**
+ * Containers and scratch directories are counted before and after a run rather
+ * than asserted to be absent: a developer's warm pool is made of exactly the
+ * same things, and a test suite has no business demanding an idle machine.
+ */
+function runpenContainers(): int
+{
+    $process = Process::fromShellCommandline('podman ps --all --filter name=^runpen- --format "{{.Names}}"');
+    $process->run();
+
+    return count(array_filter(explode("\n", trim($process->getOutput()))));
+}
+
+function runDirectories(): int
+{
+    return count(glob(storage_path('app/runs/*')) ?: []);
+}
 
 it('runs a snippet in each language', function (string $language, string $code, string $expected): void {
     $result = $this->runner->run($language, $code);
@@ -47,12 +65,11 @@ it('kills a program that never finishes', function (): void {
 });
 
 it('leaves no containers behind', function (): void {
+    $before = runpenContainers();
+
     $this->runner->run('python', 'while True: pass');
 
-    $ps = Process::fromShellCommandline('podman ps -a --format "{{.Image}}"');
-    $ps->run();
-
-    expect($ps->getOutput())->not->toContain('python:3.14-alpine');
+    expect(runpenContainers())->toBe($before);
 });
 
 it('blocks outbound network access', function (string $language, string $code): void {
@@ -146,16 +163,15 @@ it('kills the container when it truncates output', function (): void {
     // Stopping the podman client does not stop the container — conmon keeps it
     // alive — so without an explicit kill a truncated snippet would keep
     // running (and holding CPU) after its slot had been handed to someone else.
+    $before = runpenContainers();
+
     $result = $this->runner->run('python', <<<'PY'
         while True:
             print("x" * 1000)
         PY);
 
-    $running = Process::fromShellCommandline('podman ps --format "{{.Names}}"');
-    $running->run();
-
     expect($result->truncated)->toBeTrue()
-        ->and($running->getOutput())->not->toContain('runpen-');
+        ->and(runpenContainers())->toBe($before);
 });
 
 it('explains how to pull an image that is missing', function (): void {
@@ -167,12 +183,51 @@ it('explains how to pull an image that is missing', function (): void {
         ->and($result->stderr)->toContain('podman pull docker.io/library/php:0.0-cli-alpine');
 });
 
+it('reports peak memory for a run', function (): void {
+    $result = $this->runner->run('python', 'x = bytearray(40 * 1024 * 1024); print(len(x))');
+
+    // Read from the container's own cgroup while it is still alive. The figure
+    // covers the whole container, so it is above the allocation, not equal to it.
+    expect($result->peakMemoryBytes)->toBeGreaterThan(40 * 1024 * 1024)
+        ->and($result->peakMemoryBytes)->toBeLessThanOrEqual(128 * 1024 * 1024);
+});
+
+it('starts its own container when the pool is empty', function (): void {
+    $result = $this->runner->run('php', '<?php echo 1;');
+
+    expect($result->warmStart)->toBeFalse()
+        ->and($result->exitCode)->toBe(0);
+});
+
+it('streams output as the program produces it', function (): void {
+    $chunks = [];
+
+    $result = $this->runner->run('python', <<<'PY'
+        import sys, time
+        print("first", flush=True)
+        time.sleep(0.4)
+        print("second", flush=True)
+        print("problem", file=sys.stderr, flush=True)
+        PY, '', function (string $stream, string $text) use (&$chunks): void {
+        $chunks[] = [$stream, trim($text)];
+    });
+
+    // Arriving in more than one chunk is the whole point: the browser shows
+    // "first" while the program is still sleeping.
+    expect($chunks)->not->toBeEmpty()
+        ->and(collect($chunks)->where(0, 'out')->pluck(1)->implode(' '))->toContain('first')
+        ->and(collect($chunks)->where(0, 'err')->pluck(1)->implode(' '))->toContain('problem')
+        ->and($result->stdout)->toContain('second');
+});
+
 it('refuses an unknown language', function (): void {
     $this->runner->run('ruby', 'puts 1');
 })->throws(InvalidArgumentException::class);
 
 it('cleans up its run directory', function (): void {
+    $before = runDirectories();
+
     $this->runner->run('php', '<?php echo 1;');
 
-    expect(glob(storage_path('app/runs/*')))->toBeEmpty();
+    expect(runDirectories())->toBe($before);
 });

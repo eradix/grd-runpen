@@ -1,6 +1,6 @@
 import FrontendMode from '@/components/frontend-mode';
 import ScriptMode from '@/components/script-mode';
-import { post } from '@/lib/api';
+import { post, runStream } from '@/lib/api';
 import { clearDraft, readDraft, writeDraft } from '@/lib/draft';
 import type {
     Language,
@@ -44,6 +44,7 @@ export default function Playground({ languages, snippet }: Props) {
     const [stdin, setStdin] = useState(snippet?.stdin ?? '');
     const [showStdin, setShowStdin] = useState(Boolean(snippet?.stdin));
     const [result, setResult] = useState<RunResult | null>(null);
+    const [live, setLive] = useState<{ out: string; err: string } | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [running, setRunning] = useState(false);
 
@@ -136,15 +137,23 @@ export default function Playground({ languages, snippet }: Props) {
     const run = useCallback(async () => {
         setRunning(true);
         setError(null);
+        setResult(null);
+        setLive({ out: '', err: '' });
 
         try {
-            setResult(
-                await post<RunResult>('/run', {
-                    language,
-                    code: source,
-                    stdin,
-                }),
+            // Output is appended as it arrives, so a slow program shows what it
+            // has printed so far instead of the pane sitting empty until the
+            // five-second deadline.
+            const finished = await runStream(
+                { language, code: source, stdin },
+                (stream, text) =>
+                    setLive((current) => ({
+                        out: current!.out + (stream === 'out' ? text : ''),
+                        err: current!.err + (stream === 'err' ? text : ''),
+                    })),
             );
+
+            setResult(finished);
         } catch (exception) {
             setResult(null);
             setError(
@@ -154,6 +163,7 @@ export default function Playground({ languages, snippet }: Props) {
             );
         } finally {
             setRunning(false);
+            setLive(null);
         }
     }, [language, source, stdin]);
 
@@ -274,6 +284,13 @@ export default function Playground({ languages, snippet }: Props) {
                         </span>
                     )}
 
+                    <a
+                        href="/recent"
+                        className="text-xs text-slate-400 hover:text-slate-200"
+                    >
+                        Recent
+                    </a>
+
                     <button
                         type="button"
                         onClick={reset}
@@ -302,6 +319,7 @@ export default function Playground({ languages, snippet }: Props) {
                     stdin={stdin}
                     showStdin={showStdin}
                     result={result}
+                    live={live}
                     error={error}
                     running={running}
                     onSourceChange={setSource}

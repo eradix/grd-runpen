@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Runner;
 
 use Closure;
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Facades\Cache;
 
 /**
@@ -30,17 +31,31 @@ final class RunSlots
      */
     public function hold(Closure $callback): mixed
     {
+        $lock = $this->acquire();
+
+        try {
+            return $callback();
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Takes a slot, to be released by the caller.
+     *
+     * Streaming responses need this: the slot has to be held for as long as the
+     * program is producing output, which outlives the controller method that
+     * started it, so a callback-shaped API cannot express it.
+     *
+     * @throws TooManyRunsException
+     */
+    public function acquire(): Lock
+    {
         for ($slot = 0; $slot < $this->slots; $slot++) {
             $lock = Cache::lock("runner:slot:{$slot}", $this->ttlSeconds);
 
-            if (! $lock->get()) {
-                continue;
-            }
-
-            try {
-                return $callback();
-            } finally {
-                $lock->release();
+            if ($lock->get()) {
+                return $lock;
             }
         }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use App\Services\Runner\CodeRunner;
+use App\Services\Runner\ContainerPool;
 use Illuminate\Console\Command;
 use Symfony\Component\Process\Process;
 
@@ -21,7 +22,7 @@ class RunnerCheck extends Command
 
     protected $description = 'Verify podman and the runtime images are ready';
 
-    public function handle(CodeRunner $runner): int
+    public function handle(CodeRunner $runner, ContainerPool $pool): int
     {
         $podman = new Process([config('runner.podman'), '--version']);
         $podman->run();
@@ -50,8 +51,11 @@ class RunnerCheck extends Command
 
             $result = $runner->run($key, $config['sample']);
 
+            $start = $result->warmStart ? 'warm' : 'cold';
+            $ready = $pool->size((string) $key);
+
             $result->exitCode === 0
-                ? $this->components->info("{$config['label']} {$config['version']}: ok ({$result->durationMs}ms)")
+                ? $this->components->info("{$config['label']} {$config['version']}: ok ({$result->durationMs}ms, {$start} start, {$ready} ready)")
                 : $this->components->error("{$config['label']}: sample failed — ".trim($result->stderr));
 
             $failed = $failed || $result->exitCode !== 0;
